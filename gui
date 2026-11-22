@@ -1,3 +1,15 @@
+-- by @zypdm | @dumpf1x
+-- by @zypdm | @dumpf1x
+-- by @zypdm | @dumpf1x
+-- by @zypdm | @dumpf1x
+-- by @zypdm | @dumpf1x
+
+-- by @zypdm | @dumpf1x искать в тг, великий бляндит вротберущий не закрывают свои репо , спс васи за фри кряк пасты
+
+-- Neverlose Roblox UI v30: compact function rows and corrected right-column bounds
+-- Preserves register-limit/search fixes and restores full-size control rows.
+-- Neverlose uses Inter; BuilderSans is the closest built-in Roblox family.
+-- Older clients without BuilderSans fall back to the previous SourceSans.
 local FONT = Enum.Font.SourceSansSemibold
 local FONT_BOLD = Enum.Font.SourceSansBold
 pcall(function()
@@ -11473,7 +11485,7 @@ New("Frame", {
 					AutomaticCanvasSize = Enum.AutomaticSize.Y,
 					CanvasSize = UDim2.new(),
 					ScrollingDirection = Enum.ScrollingDirection.Y,
-					ClipsDescendants = false,
+					ClipsDescendants = true,
 					ZIndex = 5001,
 				}, DownBar)
 				New("UIListLayout", {
