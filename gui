@@ -11900,6 +11900,429 @@ New("Frame", {
 				return obj
 			end
 
+			-- Generic 3D preview component.
+			-- Usage: Section:AddViewport("Character", characterModel, { height = 190, autoRotate = true })
+			-- Or:    Section:AddViewport({ title = "Preview", model = characterModel, height = 190 })
+			function SectionObj:AddViewport(title, modelSource, options)
+				if type(title) == "table" then
+					options = title
+					title = options.title or "3D PREVIEW"
+					modelSource = options.model
+				elseif type(modelSource) == "table" and typeof(modelSource) ~= "Instance" and options == nil then
+					options = modelSource
+					modelSource = options.model
+				end
+				options = type(options) == "table" and options or {}
+				title = tostring(title or "3D PREVIEW")
+				local height = math.clamp(tonumber(options.height) or 176, 110, 360)
+				local fov = math.clamp(tonumber(options.fov) or 34, 10, 90)
+				local rotation = typeof(options.rotation) == "Vector3" and options.rotation or Vector3.new(0, 0, 0)
+				local zoom = math.clamp(tonumber(options.zoom) or 1, 0.55, 2.5)
+				local autoRotate = options.autoRotate == true
+				local rotateSpeed = math.clamp(tonumber(options.rotateSpeed) or 22, 1, 180)
+				local connections = {}
+				local disposed = false
+				local previewModel, sourceModel, centeredPivot
+				local baseDistance = 8
+				local dragging, hovered, activeTouch = false, false, nil
+				local lastPointer = nil
+				local autoConnection = nil
+
+				elemCount = elemCount + 1
+				local card = New("Frame", {
+					Name = "ViewportCard",
+					Size = UDim2.new(1, 0, 0, height + 65),
+					BackgroundColor3 = Color3.fromRGB(19, 22, 31),
+					BackgroundTransparency = 0.02,
+					BorderSizePixel = 0,
+					ClipsDescendants = true,
+					LayoutOrder = elemCount,
+					ZIndex = 2,
+				}, options.parent or Elements)
+				New("UICorner", { CornerRadius = UDim.new(0, 11) }, card)
+				Stroke(card, "ViewportCardStroke").Transparency = 0.91
+
+				local header = New("Frame", {
+					Name = "Header",
+					Position = UDim2.fromOffset(10, 0),
+					Size = UDim2.new(1, -20, 0, 29),
+					BackgroundTransparency = 1,
+					ZIndex = 3,
+				}, card)
+				local viewportTitle = New("TextLabel", {
+					Name = "ViewportTitle",
+					Position = UDim2.fromOffset(1, 0),
+					Size = UDim2.new(0.68, 0, 1, 0),
+					BackgroundTransparency = 1,
+					Text = title:upper(),
+					TextColor3 = Color3.fromRGB(212, 216, 228),
+					TextSize = 11,
+					Font = FONT_BOLD,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					ZIndex = 4,
+				}, header)
+				local liveBadge = New("TextLabel", {
+					Name = "PreviewBadge",
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, 0, 0.5, 0),
+					Size = UDim2.fromOffset(72, 17),
+					BackgroundColor3 = Color3.fromRGB(35, 43, 54),
+					BackgroundTransparency = 0.12,
+					Text = "3D PREVIEW",
+					TextColor3 = Color3.fromRGB(165, 184, 205),
+					TextSize = 9,
+					Font = FONT_BOLD,
+					ZIndex = 4,
+				}, header)
+				New("UICorner", { CornerRadius = UDim.new(1, 0) }, liveBadge)
+
+				local viewHolder = New("Frame", {
+					Name = "ViewportHolder",
+					Position = UDim2.fromOffset(8, 29),
+					Size = UDim2.new(1, -16, 0, height),
+					BackgroundColor3 = options.backgroundColor or Color3.fromRGB(11, 14, 21),
+					BackgroundTransparency = math.clamp(tonumber(options.backgroundTransparency) or 0, 0, 1),
+					BorderSizePixel = 0,
+					ClipsDescendants = true,
+					ZIndex = 3,
+				}, card)
+				New("UICorner", { CornerRadius = UDim.new(0, 8) }, viewHolder)
+				Stroke(viewHolder, "ViewportInnerStroke").Transparency = 0.955
+
+				local viewport = New("ViewportFrame", {
+					Name = "Viewport",
+					Position = UDim2.fromOffset(1, 1),
+					Size = UDim2.new(1, -2, 1, -2),
+					BackgroundColor3 = options.backgroundColor or Color3.fromRGB(11, 14, 21),
+					BackgroundTransparency = math.clamp(tonumber(options.backgroundTransparency) or 0, 0, 1),
+					BorderSizePixel = 0,
+					Ambient = options.ambient or Color3.fromRGB(145, 150, 170),
+					LightColor = options.lightColor or Color3.fromRGB(255, 255, 255),
+					LightDirection = options.lightDirection or Vector3.new(-0.55, -1, -0.72),
+					Active = true,
+					Selectable = false,
+					ZIndex = 4,
+				}, viewHolder)
+				local world = Instance.new("WorldModel")
+				world.Name = "PreviewWorld"
+				world.Parent = viewport
+				local camera = Instance.new("Camera")
+				camera.Name = "PreviewCamera"
+				camera.FieldOfView = fov
+				camera.Parent = viewport
+				viewport.CurrentCamera = camera
+
+				local emptyState = New("TextLabel", {
+					Name = "EmptyState",
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.new(1, -24, 0, 22),
+					BackgroundTransparency = 1,
+					Text = "NO MODEL SET",
+					TextColor3 = Color3.fromRGB(110, 117, 132),
+					TextSize = 11,
+					Font = FONT_BOLD,
+					ZIndex = 5,
+				}, viewport)
+
+				local footer = New("Frame", {
+					Name = "Footer",
+					Position = UDim2.new(0, 10, 0, height + 30),
+					Size = UDim2.new(1, -20, 0, 25),
+					BackgroundTransparency = 1,
+					ZIndex = 3,
+				}, card)
+				local hint = New("TextLabel", {
+					Name = "InteractionHint",
+					Position = UDim2.fromOffset(1, 0),
+					Size = UDim2.new(1, -76, 1, 0),
+					BackgroundTransparency = 1,
+					Text = "DRAG TO ROTATE  ·  SCROLL TO ZOOM",
+					TextColor3 = Color3.fromRGB(108, 115, 130),
+					TextSize = 9,
+					Font = FONT,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					ZIndex = 4,
+				}, footer)
+				local resetButton = New("TextButton", {
+					Name = "ResetView",
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, 0, 0.5, 0),
+					Size = UDim2.fromOffset(67, 20),
+					BackgroundColor3 = Color3.fromRGB(37, 41, 53),
+					BackgroundTransparency = 0.05,
+					BorderSizePixel = 0,
+					AutoButtonColor = false,
+					Text = "RESET VIEW",
+					TextColor3 = Color3.fromRGB(190, 195, 208),
+					TextSize = 9,
+					Font = FONT_BOLD,
+					ZIndex = 4,
+				}, footer)
+				New("UICorner", { CornerRadius = UDim.new(0, 5) }, resetButton)
+
+				local function track(connection)
+					if connection then table.insert(connections, connection) end
+					return connection
+				end
+				local function disconnect(connection)
+					if connection then pcall(function() connection:Disconnect() end) end
+					for i = #connections, 1, -1 do
+						if connections[i] == connection then table.remove(connections, i) end
+					end
+				end
+				local function applyRotation()
+					if disposed or not previewModel or not previewModel.Parent or not centeredPivot then return end
+					local turn = CFrame.Angles(math.rad(rotation.X), math.rad(rotation.Y), math.rad(rotation.Z))
+					pcall(function() previewModel:PivotTo(turn * centeredPivot) end)
+				end
+				local function updateCamera()
+					camera.FieldOfView = fov
+					if not previewModel or not previewModel.Parent then return end
+					local ok, _, bounds = pcall(function() return previewModel:GetBoundingBox() end)
+					if not ok or not bounds then return end
+					local viewSize = viewport.AbsoluteSize
+					local aspect = viewSize.X > 0 and viewSize.Y > 0 and viewSize.X / viewSize.Y or 1
+					-- Use a bounding sphere so the preview remains framed at every drag angle.
+					local radius = math.max(bounds.Magnitude * 0.5, 0.25)
+					local verticalTangent = math.tan(math.rad(fov * 0.5))
+					local horizontalTangent = verticalTangent * math.max(aspect, 0.3)
+					local limitingTangent = math.max(math.min(verticalTangent, horizontalTangent), 0.01)
+					baseDistance = math.max(1.5, radius / limitingTangent * 1.2)
+					local distance = baseDistance / zoom
+					camera.CFrame = CFrame.lookAt(Vector3.new(0, 0, distance), Vector3.zero)
+				end
+				local function clearPreviewModel()
+					if previewModel then pcall(function() previewModel:Destroy() end) end
+					previewModel, centeredPivot = nil, nil
+					emptyState.Visible = true
+				end
+				local function setModel(source)
+					if disposed then return false, "Viewport has been destroyed" end
+					clearPreviewModel()
+					sourceModel = source
+					if source == nil then return true end
+					if typeof(source) ~= "Instance" then
+						sourceModel = nil
+						return false, "Model must be an Instance (Model, BasePart, Tool, Accessory or Folder)"
+					end
+					local oldArchivable
+					pcall(function()
+						oldArchivable = source.Archivable
+						source.Archivable = true
+					end)
+					local cloneOk, clone = pcall(function() return source:Clone() end)
+					if oldArchivable ~= nil then pcall(function() source.Archivable = oldArchivable end) end
+					if not cloneOk or not clone then
+						sourceModel = nil
+						return false, "Could not clone source model; check Archivable and descendants"
+					end
+
+					local container
+					if clone:IsA("Model") then
+						container = clone
+					else
+						container = Instance.new("Model")
+						container.Name = "ViewportModel"
+						clone.Parent = container
+					end
+					for _, descendant in ipairs(container:GetDescendants()) do
+						if descendant:IsA("BaseScript") or descendant:IsA("ModuleScript") or descendant:IsA("Sound")
+							or descendant:IsA("ProximityPrompt") or descendant:IsA("ClickDetector")
+							or descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui") then
+							descendant:Destroy()
+						elseif descendant:IsA("BasePart") then
+							descendant.Anchored = true
+							descendant.CanCollide = false
+							descendant.CanTouch = false
+							descendant.CanQuery = false
+						end
+					end
+					local hasPart = false
+					for _, descendant in ipairs(container:GetDescendants()) do
+						if descendant:IsA("BasePart") then hasPart = true; break end
+					end
+					if not hasPart then
+						container:Destroy()
+						sourceModel = nil
+						return false, "The supplied model contains no BaseParts"
+					end
+
+					local boundsOk, boundsCFrame = pcall(function()
+						local cf = container:GetBoundingBox()
+						return cf
+					end)
+					if not boundsOk or not boundsCFrame then
+						container:Destroy()
+						sourceModel = nil
+						return false, "Could not calculate model bounds"
+					end
+					container.Parent = world
+					local pivotOk, pivot = pcall(function() return container:GetPivot() end)
+					if not pivotOk or not pivot then
+						container:Destroy()
+						sourceModel = nil
+						return false, "Could not read model pivot"
+					end
+					container:PivotTo(CFrame.new(-boundsCFrame.Position) * pivot)
+					previewModel = container
+					centeredPivot = previewModel:GetPivot()
+					emptyState.Visible = false
+					applyRotation()
+					updateCamera()
+					InvokeCallback(options.onModelChanged, source, previewModel)
+					return true
+				end
+
+				local object = {}
+				object.frame = card
+				object.viewport = viewport
+				object.camera = camera
+				object.world = world
+				function object:SetModel(source)
+					local ok, err = setModel(source)
+					if not ok then warn("[Neverlose UI] AddViewport:SetModel: " .. tostring(err)) end
+					return ok, err
+				end
+				function object:GetModel() return previewModel end
+				function object:GetSource() return sourceModel end
+				function object:SetFOV(value)
+					if type(value) ~= "number" or value ~= value then return fov end
+					fov = math.clamp(value, 10, 90)
+					updateCamera()
+					return fov
+				end
+				function object:GetFOV() return fov end
+				function object:SetRotation(value)
+					if typeof(value) ~= "Vector3" then return rotation end
+					rotation = Vector3.new(value.X, value.Y, value.Z)
+					applyRotation()
+					return rotation
+				end
+				function object:GetRotation() return rotation end
+				function object:SetZoom(value)
+					if type(value) ~= "number" or value ~= value then return zoom end
+					zoom = math.clamp(value, 0.55, 2.5)
+					updateCamera()
+					return zoom
+				end
+				function object:GetZoom() return zoom end
+				function object:SetAutoRotate(enabled)
+					autoRotate = enabled == true
+					if autoConnection then disconnect(autoConnection); autoConnection = nil end
+					if autoRotate then
+						autoConnection = track(RunService.RenderStepped:Connect(function(dt)
+							if disposed then return end
+							if not card.Parent then return end
+							if card.Visible and IsAncestorVisible(card) and previewModel and not dragging then
+								rotation = Vector3.new(rotation.X, (rotation.Y + rotateSpeed * dt) % 360, rotation.Z)
+								applyRotation()
+							end
+						end))
+					end
+					return autoRotate
+				end
+				function object:GetAutoRotate() return autoRotate end
+				function object:Reset()
+					rotation = Vector3.new(0, 0, 0)
+					zoom = 1
+					applyRotation()
+					updateCamera()
+					return self
+				end
+				function object:SetVisible(enabled)
+					card.Visible = enabled == true
+					return card.Visible
+				end
+				function object:GetViewport() return viewport end
+				function object:SetTitle(value)
+					viewportTitle.Text = tostring(value or "3D PREVIEW"):upper()
+					return viewportTitle.Text
+				end
+				function object:SetTitleVisible(enabled)
+					viewportTitle.Visible = enabled == true
+					return viewportTitle.Visible
+				end
+				function object:SetLighting(ambient, lightColor, lightDirection)
+					if typeof(ambient) == "Color3" then viewport.Ambient = ambient end
+					if typeof(lightColor) == "Color3" then viewport.LightColor = lightColor end
+					if typeof(lightDirection) == "Vector3" then viewport.LightDirection = lightDirection end
+					return self
+				end
+				function object:SetBackground(color, transparency)
+					if typeof(color) == "Color3" then viewport.BackgroundColor3 = color; viewHolder.BackgroundColor3 = color end
+					if type(transparency) == "number" then
+						local alpha = math.clamp(transparency, 0, 1)
+						viewport.BackgroundTransparency = alpha
+						viewHolder.BackgroundTransparency = alpha
+					end
+					return self
+				end
+				local function cleanup()
+					if disposed then return end
+					disposed = true
+					for i = #connections, 1, -1 do
+						local connection = connections[i]
+						connections[i] = nil
+						pcall(function() connection:Disconnect() end)
+					end
+					if autoConnection then pcall(function() autoConnection:Disconnect() end); autoConnection = nil end
+					if previewModel then pcall(function() previewModel:Destroy() end); previewModel = nil end
+				end
+				function object:Destroy()
+					cleanup()
+					if card.Parent then card:Destroy() end
+				end
+
+				track(viewport.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						dragging = true
+						activeTouch = input.UserInputType == Enum.UserInputType.Touch and input or nil
+						lastPointer = input.Position
+					end
+				end))
+				track(viewport.MouseEnter:Connect(function() hovered = true end))
+				track(viewport.MouseLeave:Connect(function() hovered = false end))
+				track(UserInputService.InputChanged:Connect(function(input)
+					if dragging and lastPointer and (input.UserInputType == Enum.UserInputType.MouseMovement or (activeTouch and input.UserInputType == Enum.UserInputType.Touch)) then
+						local position = input.Position
+						local delta = position - lastPointer
+						lastPointer = position
+						rotation = Vector3.new(math.clamp(rotation.X + delta.Y * 0.32, -78, 78), (rotation.Y + delta.X * 0.42) % 360, rotation.Z)
+						applyRotation()
+					elseif hovered and input.UserInputType == Enum.UserInputType.MouseWheel then
+						zoom = math.clamp(zoom + input.Position.Z * 0.08, 0.55, 2.5)
+						updateCamera()
+					end
+				end))
+				track(UserInputService.InputEnded:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 or (activeTouch and input == activeTouch) then
+						dragging, activeTouch, lastPointer = false, nil, nil
+					end
+				end))
+				track(viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateCamera))
+				track(resetButton.MouseButton1Click:Connect(function()
+					object:Reset()
+				end))
+				track(resetButton.MouseEnter:Connect(function()
+					Tween(resetButton, { BackgroundColor3 = Color3.fromRGB(48, 54, 68) }, 0.12)
+				end))
+				track(resetButton.MouseLeave:Connect(function()
+					Tween(resetButton, { BackgroundColor3 = Color3.fromRGB(37, 41, 53) }, 0.12)
+				end))
+				track(card.AncestryChanged:Connect(function(_, parent)
+					if parent == nil then cleanup() end
+				end))
+
+				if modelSource ~= nil then
+					local ok, err = setModel(modelSource)
+					if not ok then warn("[Neverlose UI] AddViewport: " .. tostring(err)) end
+				end
+				if autoRotate then object:SetAutoRotate(true) end
+				return object
+			end
+
 			function SectionObj:AddAccordion(text)
 				text = tostring(text or "Accordion")
 				elemCount = elemCount + 1
@@ -12166,6 +12589,27 @@ New("Frame", {
 					return self
 				end
 				local accordionElemCount = 0
+
+				-- Viewports can also live inside an accordion plate/group.
+				function AccordionObj:AddViewport(title, modelSource, options)
+					local viewportOptions = {}
+					if type(title) == "table" then
+						for key, value in pairs(title) do viewportOptions[key] = value end
+						viewportOptions.parent = AccordionTarget
+						accordionElemCount = accordionElemCount + 1
+						local result = SectionObj:AddViewport(viewportOptions)
+						if result and result.frame then result.frame.LayoutOrder = accordionElemCount end
+						return result
+					end
+					if type(options) == "table" then
+						for key, value in pairs(options) do viewportOptions[key] = value end
+					end
+					viewportOptions.parent = AccordionTarget
+					accordionElemCount = accordionElemCount + 1
+					local result = SectionObj:AddViewport(title, modelSource, viewportOptions)
+					if result and result.frame then result.frame.LayoutOrder = accordionElemCount end
+					return result
+				end
 
 				function AccordionObj:AddToggle(text2, default, callback)
 					accordionElemCount = accordionElemCount + 1
@@ -13363,32 +13807,431 @@ New("Frame", {
 	return WindowObj
 end
 
--- Standalone entry point:
--- This file defines the UI library, so previously executing it by itself only
--- returned `Library` and never called AddWindow. Create a small visible window
--- automatically when the whole file is run directly.
+-- Standalone entry point: full API showcase.
+-- This is intentionally a UI-only demo. Every control updates local demo state
+-- and prints its value; no game mechanics, remotes, or player state are changed.
 local function StartStandaloneWindow()
 	if Library._defaultWindow then
 		local existing = Library._defaultWindow:GetMainFrame()
 		if existing and existing.Parent then return Library._defaultWindow end
 	end
 
-	-- Skip the optional loader for a deterministic first render.
 	Library.ShowLoader = false
-	local window = Library:AddWindow("Neverlose", "", "Roblox")
+	local window = Library:AddWindow("Neverlose", "", "Roblox UI + Viewport API Demo")
 	Library._defaultWindow = window
 
-	local mainTab = window:AddTab("Main", "")
-	local left = mainTab:AddSection("GENERAL", "left")
-	left:AddToggle("Example toggle", false, function(enabled)
-		print("[Neverlose UI] Example toggle:", enabled)
+	local demoState = {}
+	local function stringify(value)
+		if typeof(value) == "Color3" then
+			return string.format("#%02X%02X%02X", math.floor(value.R * 255 + 0.5), math.floor(value.G * 255 + 0.5), math.floor(value.B * 255 + 0.5))
+		end
+		return tostring(value)
+	end
+	local function logValue(label, value)
+		demoState[label] = value
+		print("[Neverlose UI Demo] " .. tostring(label) .. " = " .. stringify(value))
+	end
+	local function callback(label)
+		return function(value) logValue(label, value) end
+	end
+	local function safeBuild(label, fn)
+		local ok, err = pcall(fn)
+		if not ok then
+			warn("[Neverlose UI Demo] " .. tostring(label) .. " failed: " .. tostring(err))
+			return false
+		end
+		return true
+	end
+
+	-- Base window API and passive overlays.
+	safeBuild("window customization", function()
+		window:SetCustomization({
+			accentColor = Color3.fromRGB(126, 145, 255),
+			watermarkText = "NEVERLOSE  •  API DEMO",
+			cornerRadius = 14,
+			showContextDots = true,
+		})
+		window:SetWatermark({
+			title = "NEVERLOSE  •  API DEMO",
+			positionPreset = "Top Right",
+			show = { logo = true, name = true, user = true, fps = true, ping = true, time = true },
+		})
+		window:SetWeaponPresets({ "Global", "Demo", "Safe" })
+		window:OnWeaponPreset(callback("Preset.Selected"))
+		window:OnProfileSetting(function(key, value)
+			logValue("Profile." .. tostring(key), value)
+		end)
+		window:OnProfileAction(function(action)
+			logValue("Profile.Action", action)
+		end)
+		if window.KeybindList then window.KeybindList.setEnabled(true) end
+		if window.SpectatorList then window.SpectatorList.setEnabled(true) end
+		window:SetSpectators({ "Demo Observer", "UI Tester" })
+		window:SetSpectatorsAuto(false)
 	end)
 
-	local right = mainTab:AddSection("STATUS", "right")
-	right:AddToggle("Interface loaded", true, function() end)
+	-- Combat: basic rows, context settings, color controls and accordion groups.
+	safeBuild("Aimbot tab", function()
+		window:AddTabLabel("Combat")
+		local tab = window:AddTab("Aimbot", "aimbot")
+		local general = tab:AddSection("GENERAL", "left")
+		local master = general:AddToggle("Enable aimbot (demo)", false, callback("Aimbot.Enabled"))
+		master:SetTooltip("Demo only. This switch does not aim or interact with the game.")
+		local settings = master:AddSettings()
+		settings:AddGroup()
+		settings:AddToggle("Show debug status", true, callback("Aimbot.DebugStatus"))
+		settings:AddCheckbox("Use demo profile", false, callback("Aimbot.UseDemoProfile"))
+		general:AddCheckbox("Visible targets only", true, callback("Aimbot.VisibleOnly"))
+		general:AddSlider("Field of view", 1, 180, 32, callback("Aimbot.FOV"), "°")
+		general:AddDropdown("Activation", { "Always", "Hold", "Toggle" }, "Hold", callback("Aimbot.Activation"))
 
-	window:AddTab("Visuals", "visuals")
-	window:AddTab("Settings", "settings")
+		local targeting = tab:AddSection("TARGETING", "right")
+		targeting:AddDropdown("Target priority", { "Closest to cursor", "Lowest health", "Closest distance" }, "Closest to cursor", callback("Aimbot.Priority"))
+		targeting:AddDropdownColorpicker("Hit marker", { "Circle", "Cross", "Corner box" }, Color3.fromRGB(126, 145, 255), callback("Aimbot.HitMarkerStyle"), callback("Aimbot.HitMarkerColor"))
+		targeting:AddColorToggle("Draw FOV", Color3.fromRGB(126, 145, 255), true, function(color, enabled)
+			logValue("Aimbot.FOVColor", color)
+			logValue("Aimbot.DrawFOV", enabled)
+		end)
+		targeting:AddColorpicker("Accent color", Color3.fromRGB(126, 145, 255), callback("Aimbot.Accent"))
+
+		local advanced = targeting:AddAccordion("ADVANCED SETTINGS")
+		advanced:AddToggle("Prediction", false, callback("Aimbot.Prediction"))
+		advanced:AddSlider("Smoothness", 1, 100, 45, callback("Aimbot.Smoothness"), "%")
+		advanced:AddDropdown("Hitbox", { "Head", "Upper torso", "Nearest" }, "Head", callback("Aimbot.Hitbox"))
+		advanced:AddGroup()
+		advanced:AddCheckbox("Draw target line", false, callback("Aimbot.TargetLine"))
+		advanced:AddColorpicker("Target line color", Color3.fromRGB(230, 230, 238), callback("Aimbot.TargetLineColor"))
+	end)
+
+	-- Legit tab: another arrangement of the same public control API.
+	safeBuild("Legit tab", function()
+		local tab = window:AddTab("Legit", "legit")
+		local assist = tab:AddSection("ASSIST", "left")
+		assist:AddToggle("Aim assist (demo)", false, callback("Legit.Enabled"))
+		assist:AddSlider("Assist strength", 0, 100, 25, callback("Legit.Strength"), "%")
+		assist:AddSlider("Maximum angle", 1, 90, 12, callback("Legit.Angle"), "°")
+		assist:AddDropdown("Aim key", { "Mouse 2", "Mouse 1", "Shift", "Alt" }, "Mouse 2", callback("Legit.Key"))
+
+		local extras = tab:AddSection("EXTRAS", "right")
+		extras:AddCheckbox("Ignore teammates", true, callback("Legit.IgnoreTeammates"))
+		extras:AddCheckbox("Ignore while typing", true, callback("Legit.IgnoreTyping"))
+		extras:AddColorToggle("Draw assist radius", Color3.fromRGB(142, 164, 255), false, function(color, enabled)
+			logValue("Legit.RadiusColor", color)
+			logValue("Legit.DrawRadius", enabled)
+		end)
+	end)
+
+	-- Visuals: the library's sub-tab API and its built-in player/ESP preview.
+	safeBuild("Visuals tab", function()
+		window:AddTabLabel("Visuals")
+		local tab = window:AddTab("Visuals", "visuals")
+		local players = tab:AddSubTab("Players", "visuals")
+		local playerEsp = players:AddSection("PLAYER ESP", "left")
+		playerEsp:AddToggle("Enable player ESP (demo)", true, callback("Visuals.PlayerESP"))
+		playerEsp:AddCheckbox("Bounding box", true, callback("Visuals.Box"))
+		playerEsp:AddCheckbox("Name", true, callback("Visuals.Name"))
+		playerEsp:AddCheckbox("Distance", true, callback("Visuals.Distance"))
+		playerEsp:AddCheckbox("Health bar", true, callback("Visuals.Health"))
+		playerEsp:AddSlider("ESP range", 50, 2000, 1000, callback("Visuals.Range"), " studs")
+		playerEsp:AddColorToggle("Enemy color", Color3.fromRGB(255, 105, 115), true, function(color, enabled)
+			logValue("Visuals.EnemyColor", color)
+			logValue("Visuals.EnemyColorEnabled", enabled)
+		end)
+		players:AddESPPreview({
+			team = "Enemies",
+			scaleTogether = true,
+			groups = {
+				{ "Main", { "Bounding Box", "Name", "Distance", "Health Bar", "Skeleton" } },
+				{ "Flags", { "Armor", "Scoped", "Reload", "Money", "Kit" } },
+				{ "Weapon", { "Text", "Icon", "Ammo", "Readiness Bar" } },
+			},
+			onTeam = callback("Visuals.PreviewTeam"),
+			onItem = function(team, group, item, enabled)
+				logValue("Visuals.PreviewItem", table.concat({ tostring(team), tostring(group), tostring(item), tostring(enabled) }, " / "))
+			end,
+		})
+
+		local world = tab:AddSubTab("World", "")
+		local worldVisuals = world:AddSection("WORLD", "left")
+		worldVisuals:AddToggle("World modulation (demo)", false, callback("World.Modulation"))
+		worldVisuals:AddCheckbox("Remove fog (demo)", false, callback("World.RemoveFog"))
+		worldVisuals:AddCheckbox("Ambient shadow (demo)", true, callback("World.Shadow"))
+		worldVisuals:AddDropdown("Sky preset", { "Default", "Dusk", "Night", "Overcast" }, "Default", callback("World.Sky"))
+		local worldColors = world:AddSection("COLORS", "right")
+		worldColors:AddColorpicker("Ambient tint", Color3.fromRGB(160, 170, 205), callback("World.Ambient"))
+		worldColors:AddColorpicker("Fog tint", Color3.fromRGB(100, 110, 135), callback("World.Fog"))
+		worldColors:AddSlider("Brightness", 0, 100, 50, callback("World.Brightness"), "%")
+
+		local other = tab:AddSubTab("Other", "")
+		local otherLeft = other:AddSection("VISUAL EXTRAS", "left")
+		otherLeft:AddToggle("Hit effect (demo)", false, callback("Visuals.HitEffect"))
+		otherLeft:AddToggle("Damage marker (demo)", true, callback("Visuals.DamageMarker"))
+		otherLeft:AddDropdown("Marker style", { "Minimal", "Classic", "Compact" }, "Minimal", callback("Visuals.MarkerStyle"))
+		local otherRight = other:AddSection("PREVIEW OPTIONS", "right")
+		otherRight:AddCheckbox("Show preview hints", true, callback("Visuals.PreviewHints"))
+		otherRight:AddSlider("Preview scale", 50, 150, 100, callback("Visuals.PreviewScale"), "%")
+	end)
+
+	-- Movement: purely simulated configuration values.
+	safeBuild("Movement tab", function()
+		local tab = window:AddTab("Movement", "run")
+		local movement = tab:AddSection("MOVEMENT", "left")
+		movement:AddToggle("Bunny hop (demo)", false, callback("Movement.BunnyHop"))
+		movement:AddToggle("Strafe helper (demo)", false, callback("Movement.Strafe"))
+		movement:AddCheckbox("Auto jump", false, callback("Movement.AutoJump"))
+		movement:AddSlider("Strafe speed", 1, 100, 30, callback("Movement.StrafeSpeed"), "%")
+		movement:AddDropdown("Strafe mode", { "Legit", "Directional", "Rage" }, "Legit", callback("Movement.StrafeMode"))
+
+		local camera = tab:AddSection("CAMERA", "right")
+		camera:AddToggle("Third person (demo)", false, callback("Movement.ThirdPerson"))
+		camera:AddSlider("Camera distance", 1, 25, 8, callback("Movement.CameraDistance"), " studs")
+		camera:AddSlider("Camera FOV", 60, 120, 90, callback("Movement.CameraFOV"), "°")
+		camera:AddColorpicker("Camera indicator", Color3.fromRGB(126, 145, 255), callback("Movement.CameraColor"))
+	end)
+
+	-- Miscellaneous: placeholders for overlays, utility toggles, and usage API.
+	safeBuild("Misc tab", function()
+		local tab = window:AddTab("Misc", "miscellaneous")
+		local overlays = tab:AddSection("OVERLAYS", "left")
+		overlays:AddToggle("Keybind list", true, function(enabled)
+			logValue("Misc.KeybindList", enabled)
+			if window.KeybindList then window.KeybindList.setEnabled(enabled) end
+		end)
+		overlays:AddToggle("Spectator list", true, function(enabled)
+			logValue("Misc.SpectatorList", enabled)
+			if window.SpectatorList then window.SpectatorList.setEnabled(enabled) end
+		end)
+		overlays:AddToggle("Watermark FPS", true, function(enabled)
+			logValue("Misc.WatermarkFPS", enabled)
+			if window.Watermark then window.Watermark.toggle("fps", enabled) end
+		end)
+		overlays:AddToggle("Watermark ping", true, function(enabled)
+			logValue("Misc.WatermarkPing", enabled)
+			if window.Watermark then window.Watermark.toggle("ping", enabled) end
+		end)
+		overlays:AddCheckbox("Show demo observers", true, function(enabled)
+			if enabled then window:SetSpectators({ "Demo Observer", "UI Tester" }) else window:SetSpectators({}) end
+		end)
+
+		local utilities = tab:AddSection("UTILITIES", "right")
+		utilities:AddToggle("Anti-idle (demo only)", false, callback("Misc.AntiIdle"))
+		utilities:AddCheckbox("Show notification placeholders", true, callback("Misc.Notifications"))
+		utilities:AddDropdown("Menu scale preset", { "Auto", "90%", "100%", "110%" }, "Auto", function(value)
+			logValue("Misc.ScalePreset", value)
+			if value == "Auto" then window:SetScale("Auto") else window:SetScale(tonumber(value:gsub("%%", "")) / 100) end
+		end)
+		local apiAccordion = utilities:AddAccordion("EXTRA OPTIONS")
+		apiAccordion:AddToggle("Show watermark user", true, function(enabled)
+			if window.Watermark then window.Watermark.toggle("user", enabled) end
+		end)
+		apiAccordion:AddCheckbox("Show watermark clock", true, function(enabled)
+			if window.Watermark then window.Watermark.toggle("time", enabled) end
+		end)
+		apiAccordion:AddSlider("Demo opacity", 0, 100, 25, callback("Misc.DemoOpacity"), "%")
+
+		local usage = window:GetUsage()
+		usage:AddSelection("Demo language", { "English", "Russian", "Deutsch" }, "English", callback("Usage.Language"))
+		usage:AddColorpicker("Demo accent", Color3.fromRGB(126, 145, 255), callback("Usage.Accent"))
+	end)
+
+	local customDemoPanel = nil
+
+	-- 3D viewport showcase: the source model is built locally, cloned into a
+	-- WorldModel, and can be rotated/zoomed without changing anything in-game.
+	safeBuild("3D viewport tab", function()
+		window:AddTabLabel("Preview")
+		local tab = window:AddTab("3D Preview", "inventory")
+		local previewSection = tab:AddSection("MODEL VIEWPORT", "left")
+		local settingsSection = tab:AddSection("VIEW CONTROLS", "right")
+
+		local sample = Instance.new("Model")
+		sample.Name = "AtheriumPreviewSubject"
+		local silver = Color3.fromRGB(184, 190, 204)
+		local dark = Color3.fromRGB(42, 47, 60)
+		local accent = Color3.fromRGB(126, 145, 255)
+		local function makePart(name, size, position, color, shape)
+			local part = Instance.new("Part")
+			part.Name = name
+			part.Size = size
+			part.CFrame = CFrame.new(position)
+			part.Anchored = true
+			part.CanCollide = false
+			part.CanTouch = false
+			part.CanQuery = false
+			part.Material = Enum.Material.SmoothPlastic
+			part.Color = color
+			if shape then part.Shape = shape end
+			part.Parent = sample
+			return part
+		end
+		local torso = makePart("Torso", Vector3.new(1.25, 1.45, 0.62), Vector3.new(0, 0.1, 0), dark)
+		makePart("Head", Vector3.new(0.82, 0.82, 0.82), Vector3.new(0, 1.27, 0), silver, Enum.PartType.Ball)
+		makePart("LeftArm", Vector3.new(0.38, 1.32, 0.42), Vector3.new(-0.88, 0.12, 0), silver)
+		makePart("RightArm", Vector3.new(0.38, 1.32, 0.42), Vector3.new(0.88, 0.12, 0), silver)
+		makePart("LeftLeg", Vector3.new(0.48, 1.15, 0.5), Vector3.new(-0.32, -1.18, 0), dark)
+		makePart("RightLeg", Vector3.new(0.48, 1.15, 0.5), Vector3.new(0.32, -1.18, 0), dark)
+		makePart("Core", Vector3.new(0.48, 0.22, 0.12), Vector3.new(0, 0.18, -0.37), accent)
+		makePart("EyeLeft", Vector3.new(0.12, 0.08, 0.04), Vector3.new(-0.18, 1.32, -0.42), accent)
+		makePart("EyeRight", Vector3.new(0.12, 0.08, 0.04), Vector3.new(0.18, 1.32, -0.42), accent)
+		sample.PrimaryPart = torso
+
+		local viewport = previewSection:AddViewport("Atherium Subject", sample, {
+			height = 218,
+			fov = 34,
+			zoom = 1,
+			autoRotate = true,
+			rotateSpeed = 16,
+			backgroundColor = Color3.fromRGB(12, 15, 23),
+			ambient = Color3.fromRGB(150, 158, 180),
+			lightDirection = Vector3.new(-0.45, -1, -0.65),
+		})
+		sample:Destroy()
+
+		settingsSection:AddToggle("Auto rotate", true, function(enabled)
+			viewport:SetAutoRotate(enabled)
+			logValue("Viewport.AutoRotate", enabled)
+		end)
+		settingsSection:AddSlider("Zoom", 55, 250, 100, function(value)
+			viewport:SetZoom(value / 100)
+			logValue("Viewport.Zoom", value / 100)
+		end, "%")
+		settingsSection:AddSlider("Rotation", 0, 360, 0, function(value)
+			viewport:SetAutoRotate(false)
+			viewport:SetRotation(Vector3.new(0, value, 0))
+			logValue("Viewport.Rotation", value)
+		end, "°")
+		settingsSection:AddSlider("Field of view", 10, 90, 34, function(value)
+			viewport:SetFOV(value)
+			logValue("Viewport.FOV", value)
+		end, "°")
+		settingsSection:AddDropdown("Preview lighting", { "Studio", "Soft", "Neutral" }, "Studio", function(value)
+			local presets = {
+				Studio = { ambient = Color3.fromRGB(150, 158, 180), direction = Vector3.new(-0.45, -1, -0.65) },
+				Soft = { ambient = Color3.fromRGB(190, 190, 205), direction = Vector3.new(0.2, -1, -0.25) },
+				Neutral = { ambient = Color3.fromRGB(128, 128, 128), direction = Vector3.new(0, -1, -0.1) },
+			}
+			local preset = presets[value]
+			viewport:SetLighting(preset.ambient, Color3.fromRGB(255, 255, 255), preset.direction)
+			logValue("Viewport.Lighting", value)
+		end)
+		settingsSection:AddCheckbox("Show preview title", true, function(enabled)
+			viewport:SetTitleVisible(enabled)
+			logValue("Viewport.TitleVisible", enabled)
+		end)
+	end)
+
+	-- Dedicated UI/API page: calls the window-level setters directly.
+	safeBuild("Interface tab", function()
+		window:AddTabLabel("Interface")
+		local tab = window:AddTab("UI API", "settings")
+		local windowApi = tab:AddSection("WINDOW API", "left")
+		windowApi:AddToggle("Show window logo", true, function(enabled)
+			window:SetLogoVisible(enabled)
+			logValue("UI.LogoVisible", enabled)
+		end)
+		windowApi:AddSlider("Window scale", 50, 110, 100, function(value)
+			window:SetScale(value / 100)
+			logValue("UI.Scale", value / 100)
+		end, "%")
+		windowApi:AddColorpicker("Accent color", Color3.fromRGB(126, 145, 255), function(color)
+			window:SetCustomization({ accentColor = color })
+			logValue("UI.Accent", color)
+		end)
+		windowApi:AddCheckbox("Show context dots", true, function(enabled)
+			window:SetCustomization({ showContextDots = enabled })
+			logValue("UI.ContextDots", enabled)
+		end)
+		windowApi:AddToggle("Custom menu panel", false, function(enabled)
+			if customDemoPanel then customDemoPanel:SetVisible(enabled) end
+			logValue("UI.CustomMenu", enabled)
+		end)
+
+		local overlays = tab:AddSection("OVERLAY API", "right")
+		overlays:AddToggle("Keybind overlay", true, function(enabled)
+			if window.KeybindList then window.KeybindList.setEnabled(enabled) end
+			logValue("UI.KeybindOverlay", enabled)
+		end)
+		overlays:AddToggle("Spectator overlay", true, function(enabled)
+			if window.SpectatorList then window.SpectatorList.setEnabled(enabled) end
+			logValue("UI.SpectatorOverlay", enabled)
+		end)
+		overlays:AddDropdown("Watermark position", { "Top Right", "Top Center", "Top Left", "Bottom Right", "Bottom Center", "Bottom Left" }, "Top Right", function(value)
+			window:SetWatermark({ positionPreset = value })
+			logValue("UI.WatermarkPosition", value)
+		end)
+	end)
+
+	-- Loadout page demonstrates the library's specialized inventory widget.
+	-- Selecting a slot only logs its label; nothing is equipped or changed.
+	safeBuild("Loadout tab", function()
+		window:AddTabLabel("Preview")
+		local tab = window:AddTab("Loadout", "inventory")
+		tab:AddLoadout({
+			team = "CT",
+			onTeam = callback("Loadout.Team"),
+			onSelect = function(team, category, index, itemName)
+				logValue("Loadout.Selection", table.concat({ tostring(team), tostring(category), tostring(index), tostring(itemName) }, " / "))
+			end,
+		})
+	end)
+
+	-- Custom panel API: hidden until the user enables it on the UI API tab.
+	safeBuild("custom menu API", function()
+		customDemoPanel = window:AddCustomMenu("API Preview", function(panel, api)
+			local title = Instance.new("TextLabel")
+			title.Name = "DemoTitle"
+			title.Position = UDim2.fromOffset(20, 16)
+			title.Size = UDim2.new(1, -40, 0, 28)
+			title.BackgroundTransparency = 1
+			title.Text = "CUSTOM MENU API"
+			title.TextColor3 = Color3.fromRGB(235, 236, 241)
+			title.TextSize = 16
+			title.Font = Enum.Font.SourceSansBold
+			title.TextXAlignment = Enum.TextXAlignment.Left
+			title.Parent = panel
+
+			local description = Instance.new("TextLabel")
+			description.Name = "DemoDescription"
+			description.Position = UDim2.fromOffset(20, 52)
+			description.Size = UDim2.new(1, -40, 0, 54)
+			description.BackgroundTransparency = 1
+			description.Text = "This panel was created through Window:AddCustomMenu().\nIt is a local UI example; it does not control the game."
+			description.TextColor3 = Color3.fromRGB(160, 163, 175)
+			description.TextSize = 14
+			description.Font = Enum.Font.SourceSans
+			description.TextWrapped = true
+			description.TextXAlignment = Enum.TextXAlignment.Left
+			description.TextYAlignment = Enum.TextYAlignment.Top
+			description.Parent = panel
+
+			local closeButton = Instance.new("TextButton")
+			closeButton.Name = "ClosePreview"
+			closeButton.AnchorPoint = Vector2.new(1, 1)
+			closeButton.Position = UDim2.new(1, -18, 1, -16)
+			closeButton.Size = UDim2.fromOffset(100, 30)
+			closeButton.BackgroundColor3 = Color3.fromRGB(45, 49, 63)
+			closeButton.BorderSizePixel = 0
+			closeButton.Text = "CLOSE"
+			closeButton.TextColor3 = Color3.fromRGB(235, 236, 241)
+			closeButton.TextSize = 13
+			closeButton.Font = Enum.Font.SourceSansSemibold
+			closeButton.Parent = panel
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 7)
+			corner.Parent = closeButton
+			closeButton.MouseButton1Click:Connect(function() api:Hide() end)
+		end, {
+			position = UDim2.new(0.18, 0, 0.17, 0),
+			size = UDim2.new(0.64, 0, 0.54, 0),
+			backgroundColor = Color3.fromRGB(15, 17, 25),
+			backgroundTransparency = 0.08,
+			cornerRadius = 14,
+		})
+		logValue("API.CustomMenuCount", #window:GetCustomMenus())
+	end)
+
+
+	print("[Neverlose UI Demo] Loaded. All controls are local placeholders; the 3D viewport is an isolated WorldModel preview, and no gameplay actions are connected.")
 	return window
 end
 
