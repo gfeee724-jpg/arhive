@@ -1,10 +1,3 @@
--- by @zypdm | @dumpf1x
--- by @zypdm | @dumpf1x
--- by @zypdm | @dumpf1x
--- by @zypdm | @dumpf1x
--- by @zypdm | @dumpf1x
-
--- by @zypdm | @dumpf1x искать в тг, великий бляндит вротберущий не закрывают свои репо , спс васи за фри кряк пасты
 
 -- Neverlose Roblox UI v30: compact function rows and corrected right-column bounds
 -- Preserves register-limit/search fixes and restores full-size control rows.
@@ -1403,8 +1396,24 @@ end
 	end
 
 	UserInputService.InputBegan:Connect(function(input)
+		-- Escape always dismisses floating menus, even if the game also listens
+		-- for keyboard input. Close callbacks are idempotent (see each widget).
+		if input.KeyCode == Enum.KeyCode.Escape then
+			local copy = {}
+			for i, entry in ipairs(_openPopups) do copy[i] = entry end
+			for _, entry in ipairs(copy) do
+				if entry.frame and entry.frame.Parent and type(entry.closeFn) == "function" then
+					pcall(entry.closeFn)
+				end
+			end
+			return
+		end
 		if not IsPrimaryInput(input) then return end
-		local point = GetInputPosition(input)
+		-- MouseButton input objects can report a stale/zero Position on some
+		-- clients. GetMouseLocation is the canonical pointer coordinate; touch
+		-- still uses the individual input position.
+		local point = input.UserInputType == Enum.UserInputType.Touch and GetInputPosition(input) or GetPointerPosition()
+		if not point or (point.X == 0 and point.Y == 0) then point = GetInputPosition(input) end
 		local toClose = {}
 		-- A click inside a child popup (color picker, list) counts as inside every
 		-- popup it was opened from, so the parent plate stays open.
@@ -1456,13 +1465,19 @@ end
 
 local function GetPopupScale(frame)
 	if not frame or not frame.Parent then return nil end
-	-- Reuse the animation scale on every opening. Checking for any UIScale first
-	-- made _PopScale work once, then silently disabled future open/close motion.
+	-- Reuse a scale created while the popup was built. Some preview/plugin
+	-- callback threads cannot call Instance.new after the initial build phase.
 	local pop = frame:FindFirstChild("_PopScale")
 	if pop and pop:IsA("UIScale") then return pop end
 	local existing = frame:FindFirstChildOfClass("UIScale")
 	if existing then return nil end
-	return New("UIScale", { Name = "_PopScale", Scale = 1 }, frame)
+	-- Scaling is decorative; if the environment disallows runtime Instance
+	-- creation, keep the fade animation working instead of breaking close/open.
+	local ok, created = pcall(function()
+		return New("UIScale", { Name = "_PopScale", Scale = 1 }, frame)
+	end)
+	if ok then return created end
+	return nil
 end
 
 -- Fades a popup's text and icons with its background, so closing reads as one
@@ -5636,6 +5651,7 @@ end
 		do local ll = Instance.new("UIListLayout"); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0, 2); ll.Parent = DropContainer end
 
 		local function closeDropdown()
+			if not dropOpen and not DropPopup.Visible then return end
 			dropOpen = false
 			Tween(Arrow, {ImageTransparency = 0.4, Rotation = 0}, 0.14, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 			UnregisterPopup(DropPopup)
@@ -9946,6 +9962,7 @@ New("Frame", {
 					New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, DropContainer)
 
 					local function closeDropdown()
+						if not dropOpen and not DropPopup.Visible then return end
 						dropOpen = false
 						Tween(SelArrow, {Rotation = -90}, 0.14, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 						UnregisterPopup(DropPopup)
@@ -11470,6 +11487,10 @@ New("Frame", {
 					ClipsDescendants = true,
 				}, Dropdown)
 				New("UICorner", { CornerRadius = UDim.new(0, 10) }, DownBar)
+				-- Create the scale while building the widget. Atherium's preview/plugin
+				-- callback thread may deny Instance.new during closeDropdown -> SmoothClose.
+				-- GetPopupScale will reuse this instance instead of creating one on demand.
+				New("UIScale", { Name = "_PopScale", Scale = 1 }, DownBar)
 				local PopupStroke = Stroke(DownBar)
 
 				local Scrolls = New("ScrollingFrame", {
@@ -11496,10 +11517,10 @@ New("Frame", {
 				local function closeDropdown()
 					if not dropOpen and not DownBar.Visible then return end
 					dropOpen = false
+					if _openDropdown == closeDropdown then _openDropdown = nil end
 					UnregisterPopup(DownBar)
 					DownBar:SetAttribute("CloseToken", (DownBar:GetAttribute("CloseToken") or 0) + 1)
 					SmoothClose(DownBar, 0.1)
-					if _openDropdown == closeDropdown then _openDropdown = nil end
 				end
 
 				local optionRows = {}
@@ -11541,8 +11562,8 @@ New("Frame", {
 							if check then check.Visible = false end
 							row.TextColor3 = option == selected and Color3.fromRGB(228, 228, 229) or Color3.fromRGB(175, 175, 180)
 						end
-						InvokeCallback(callback, opt)
 						closeDropdown()
+						InvokeCallback(callback, opt)
 					end)
 				end
 
@@ -11742,10 +11763,11 @@ New("Frame", {
 					end
 				end
 				local function closeDropdown()
+					if not dropOpen and not DownBar.Visible then return end
 					dropOpen = false
-					SmoothClose(DownBar, 0.1)
-					UnregisterPopup(DownBar)
 					if _openDropdown == closeDropdown then _openDropdown = nil end
+					UnregisterPopup(DownBar)
+					SmoothClose(DownBar, 0.1)
 				end
 				local function CurrentColor() return currentColor end
 				local function NotifySelection(value)
@@ -12888,11 +12910,12 @@ New("Frame", {
 					New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, DropContainer)
 
 					local function closeDropdown2()
+						if not dropOpen and not DropPopup.Visible then return end
 						dropOpen = false
+						if _openAccordionDropdown == closeDropdown2 then _openAccordionDropdown = nil end
 						Tween(SelArrow, { Rotation = -90 }, 0.16, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
 						UnregisterPopup(DropPopup)
 						SmoothClose(DropPopup, 0.18)
-						if _openAccordionDropdown == closeDropdown2 then _openAccordionDropdown = nil end
 					end
 
 					local function updateCheckmarks()
